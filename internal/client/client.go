@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"sync"
 
 	"github.com/oleg-yurchenko/chatrooms/internal/shared"
 )
@@ -21,7 +20,6 @@ type Client struct {
 	kp     shared.KeyPair
 	rcv    *gob.Decoder
 	snd    *gob.Encoder
-	msgMx  sync.Mutex
 }
 
 type ClientConfig struct {
@@ -43,7 +41,7 @@ func MakeClient(cfg ClientConfig) (client *Client, err error) {
 	if err != nil {
 		return
 	}
-	log.Printf("Dialed server on %v (local: %c)", client.conn.RemoteAddr(), client.conn.LocalAddr())
+	log.Printf("Dialed server on %v", client.conn.RemoteAddr())
 
 	client.rcv = gob.NewDecoder(client.conn)
 	client.snd = gob.NewEncoder(client.conn)
@@ -108,10 +106,7 @@ func (client *Client) Establish() (err error) {
 
 // main loop that processes messages from the server and reads messages from the user
 func (client *Client) FetchMessages() []shared.Message {
-	client.msgMx.Lock()
-	client.msgMx.Unlock()
-
-	out := make([]shared.Message, len(client.msgs))
+	out := make([]shared.Message, 0)
 
 	for {
 		select {
@@ -149,6 +144,9 @@ func (client *Client) receiveMessageLoop() {
 }
 
 func (client *Client) SendMessage(raw string) {
+	if len(raw) == 0 {
+		return
+	}
 	if raw[0] == '/' {
 		// specially handle commands, do nothing for now
 

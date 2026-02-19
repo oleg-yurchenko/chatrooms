@@ -9,12 +9,15 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/timer"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/oleg-yurchenko/chatrooms/internal/client"
 )
 
 type model struct {
 	messageLog *bytes.Buffer
+	viewport   viewport.Model
+	ready      bool
 	input      textinput.Model
 	timer      timer.Model
 	err        error
@@ -29,6 +32,7 @@ func initialModel(client *client.Client) model {
 
 	return model{
 		messageLog: new(bytes.Buffer),
+		ready:      false,
 		input:      ti,
 		timer:      tmr,
 		err:        nil,
@@ -42,23 +46,39 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	cmds := make([]tea.Cmd, 0)
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if !m.ready {
+			// TODO: figure out how to get this hard-coded value of 2
+			m.viewport = viewport.New(msg.Width, msg.Height-2)
+			m.viewport.SetContent(m.messageLog.String())
+			m.viewport.SetYOffset(m.input.PromptStyle.GetHeight())
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - 2
+		}
+
 	case timer.TickMsg:
 		m.timer, cmd = m.timer.Update(msg)
-		return m, cmd
+		cmds = append(cmds, cmd)
 
 	case timer.TimeoutMsg:
 		msgs := m.client.FetchMessages()
 
-		for _, message := range msgs {
-			// NOTE: name and message are not sanitized -- should fix!
-			m.messageLog.WriteString(fmt.Sprintf("[%s] %s\n", message.Nickname, message.Data))
+		if len(msgs) > 0 {
+			for _, message := range msgs {
+				// NOTE: name and message are not sanitized -- should fix!
+				m.messageLog.WriteString(fmt.Sprintf("[%s] %s\n", message.Nickname, message.Data))
+			}
+			m.viewport.SetContent(m.messageLog.String())
 		}
 
+		m.timer = timer.NewWithInterval(time.Duration(time.Millisecond*500), time.Duration(time.Millisecond*500))
 		cmd = m.timer.Init()
-
-		return m, cmd
+		cmds = append(cmds, cmd)
 
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -67,23 +87,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.client.SendMessage(text)
 			m.input.Reset()
 
-			return m, nil
-
 		case tea.KeyEsc:
-			return m, tea.Quit
+			cmds = append(cmds, tea.Quit)
 		}
 
 	case error:
 		m.err = msg
-		return m, nil
 	}
 
 	m.input, cmd = m.input.Update(msg)
-	return m, cmd
+	cmds = append(cmds, cmd)
+
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+
+	if len(cmds) == 0 {
+		return m, nil
+	} else {
+		return m, tea.Batch(cmds...)
+	}
 }
 
 func (m model) View() string {
-	return fmt.Sprintf("%s\n%s\n", m.messageLog.String(), m.input.View())
+	return fmt.Sprintf("%s\n%s\n", m.viewport.View(), m.input.View())
 }
 
 func main() {
