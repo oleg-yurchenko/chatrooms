@@ -60,7 +60,7 @@ func (server *Server) Start() error {
 			return nil
 		case conn := <-newConn:
 			// populate info
-			go server.Establish(ctx, conn)
+			go server.Establish(context.Background(), conn)
 		}
 	}
 }
