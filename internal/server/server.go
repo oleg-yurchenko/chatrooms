@@ -28,6 +28,7 @@ type Server struct {
 	name       string
 	anonTicker uint
 	logMsgs    chan string
+	cancel     context.CancelFunc
 }
 
 type ServerConfig struct {
@@ -67,14 +68,17 @@ func (server *Server) Start() error {
 		}
 	}()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	server.cancel = cancel
+
 	for {
 		select {
-		case <-context.Background().Done():
+		case <-ctx.Done():
 			// exit gracefully
 			return nil
 		case conn := <-newConn:
 			// populate info
-			go server.Establish(context.Background(), conn)
+			go server.Establish(ctx, conn)
 		case msg := <-server.logMsgs:
 			log.Println(msg)
 		}
@@ -87,11 +91,6 @@ func (server *Server) Establish(ctx context.Context, conn net.Conn) {
 
 	var err error = nil
 	uid := shared.MakeUserId()
-	defer func() {
-		if err != nil {
-			delete(server.conns, uid)
-		}
-	}()
 
 	var kp shared.ECDHKeyPair
 	err = kp.Init()
@@ -140,6 +139,12 @@ func (server *Server) Establish(ctx context.Context, conn net.Conn) {
 	// update the registry
 	server.conns[uid] = newConn
 	server.users[uname] = uid
+	defer func() {
+		if err != nil {
+			delete(server.conns, uid)
+			delete(server.users, uname)
+		}
+	}()
 
 	// send the user their assigned name + our public key
 	var pkey []byte
@@ -149,6 +154,7 @@ func (server *Server) Establish(ctx context.Context, conn net.Conn) {
 	}
 	ourmsg := &shared.EstablishMessage{
 		Name:   uname,
+		Uid:    uid,
 		Pubkey: pkey,
 	}
 	newConn.snd.Encode(ourmsg)

@@ -1,22 +1,27 @@
 package client
 
 import (
+	"context"
 	"encoding/gob"
 	"log"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/oleg-yurchenko/chatrooms/internal/shared"
 )
 
 type Client struct {
-	uid  shared.UserId
-	name string
-	conn net.Conn
-	msgs chan shared.Message
-	kp   shared.KeyPair
-	rcv  *gob.Decoder
-	snd  *gob.Encoder
+	ctx    context.Context
+	cancel context.CancelFunc
+	name   string
+	uid    shared.UserId
+	conn   net.Conn
+	msgs   chan shared.Message
+	kp     shared.KeyPair
+	rcv    *gob.Decoder
+	snd    *gob.Encoder
+	msgMx  sync.Mutex
 }
 
 type ClientConfig struct {
@@ -26,10 +31,12 @@ type ClientConfig struct {
 }
 
 func MakeClient(cfg ClientConfig) (client *Client, err error) {
+	ctx, cancel := context.WithCancel(context.Background())
 	client = &Client{
-		uid:  0,
-		name: cfg.Name,
-		msgs: make(chan shared.Message, 32),
+		ctx:    ctx,
+		cancel: cancel,
+		name:   cfg.Name,
+		msgs:   make(chan shared.Message, 32),
 	}
 
 	client.conn, err = net.Dial("tcp", net.JoinHostPort(cfg.Addr, strconv.Itoa(cfg.Port)))
@@ -67,6 +74,7 @@ func (client *Client) Establish() (err error) {
 	}
 	ourmsg := &shared.EstablishMessage{
 		Name:   client.name,
+		Uid:    shared.UserId(0),
 		Pubkey: pkey,
 	}
 	client.snd.Encode(ourmsg)
@@ -90,10 +98,75 @@ func (client *Client) Establish() (err error) {
 
 	// set our name
 	client.name = pubmsg.Name
+	client.uid = pubmsg.Uid
+
+	// start reading messages
+	go client.receiveMessageLoop()
 
 	return
 }
 
+// main loop that processes messages from the server and reads messages from the user
+func (client *Client) FetchMessages() []shared.Message {
+	client.msgMx.Lock()
+	client.msgMx.Unlock()
+
+	out := make([]shared.Message, len(client.msgs))
+
+	for {
+		select {
+		case msg := <-client.msgs:
+			out = append(out, msg)
+		case <-client.ctx.Done():
+			return nil
+		default:
+			return out
+		}
+	}
+}
+
+func (client *Client) receiveMessageLoop() {
+
+	newMsg := make(chan shared.EncryptedMessage)
+	go func() {
+		for {
+			var encrypted shared.EncryptedMessage
+			err := client.rcv.Decode(&encrypted)
+			if err == nil {
+				newMsg <- encrypted
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-client.ctx.Done():
+			return
+		case encrypted := <-newMsg:
+			client.msgs <- client.kp.DecryptMessage(encrypted)
+		}
+	}
+}
+
+func (client *Client) SendMessage(raw string) {
+	if raw[0] == '/' {
+		// specially handle commands, do nothing for now
+
+	} else {
+		msg := &shared.Message{
+			SenderId: client.uid,
+			Nickname: client.name,
+			Cmd:      shared.SendMessage,
+			Data:     raw,
+		}
+
+		// encrypt and send the message
+		encrypted := client.kp.EncryptMessage(*msg)
+		client.snd.Encode(encrypted)
+	}
+}
+
 func (client *Client) Exit() {
+	client.cancel()
 	client.conn.Close()
 }

@@ -42,6 +42,7 @@ type EncryptedMessage struct {
 // this message is exclusively used when establishing a connection to send over the public key
 type EstablishMessage struct {
 	Name   string // acts as the user's desired name if sent from client. Acts as the assigned name when sent from server
+	Uid    UserId // user doesn't send this, but reads it when server sends it and stores it.
 	Pubkey []byte
 }
 
