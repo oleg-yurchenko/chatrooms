@@ -1,11 +1,13 @@
 package shared
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/gob"
 	mrand "math/rand/v2"
 )
 
@@ -16,24 +18,32 @@ func MakeUserId() UserId {
 	return UserId(mrand.Uint64())
 }
 
-type Message struct {
-	senderId UserId
-	nickname string
-	message  string
-}
-
-type EncryptedMessage struct {
-	iv   []byte
-	emsg []byte // encrypted `Message` struct
-}
-
 type ChatCommand uint8
 
 const (
-	ListOnline ChatCommand = iota
+	SendMessage ChatCommand = iota
+	ListOnline
 	Whisper
 	CopyLast
 )
+
+type Message struct {
+	SenderId UserId
+	Nickname string
+	Cmd      ChatCommand
+	Data     string
+}
+
+type EncryptedMessage struct {
+	Iv   []byte
+	Emsg []byte // encrypted `Message` struct
+}
+
+// this message is exclusively used when establishing a connection to send over the public key
+type EstablishMessage struct {
+	Name   string // acts as the user's desired name if sent from client. Acts as the assigned name when sent from server
+	Pubkey []byte
+}
 
 type KeyPair interface {
 	Init() error
@@ -41,12 +51,15 @@ type KeyPair interface {
 	MarshalPublic() ([]byte, error)
 	// writes to other public key stored in the type
 	UnmarshalPublic([]byte) error
-	Exchange([]byte) error
+	Exchange() error
 	Public() []byte
 	Private() []byte
 	Shared() []byte
 	Encrypt([]byte) EncryptedMessage
 	Decrypt(EncryptedMessage) []byte
+
+	EncryptMessage(Message) EncryptedMessage
+	DecryptMessage(EncryptedMessage) Message
 }
 
 type ECDHKeyPair struct {
@@ -83,7 +96,7 @@ func (kp *ECDHKeyPair) UnmarshalPublic(other []byte) error {
 	return nil
 }
 
-func (kp *ECDHKeyPair) Exchange(other []byte) error {
+func (kp *ECDHKeyPair) Exchange() error {
 	var err error
 	kp.shared, err = kp.private.ECDH(kp.other)
 	if err != nil {
@@ -112,21 +125,40 @@ func (kp *ECDHKeyPair) Shared() []byte {
 }
 
 func (kp *ECDHKeyPair) Encrypt(msg []byte) (out EncryptedMessage) {
-	out.iv = make([]byte, kp.block.BlockSize())
-	rand.Read(out.iv)
+	out.Iv = make([]byte, kp.block.BlockSize())
+	rand.Read(out.Iv)
 
-	bm := cipher.NewCBCEncrypter(kp.block, out.iv)
-	out.emsg = make([]byte, len(msg))
-	bm.CryptBlocks(out.emsg, msg)
+	bm := cipher.NewCBCEncrypter(kp.block, out.Iv)
+	out.Emsg = make([]byte, len(msg))
+	bm.CryptBlocks(out.Emsg, msg)
 
 	return
 }
 
 func (kp *ECDHKeyPair) Decrypt(msg EncryptedMessage) (out []byte) {
-	out = make([]byte, len(msg.emsg))
+	out = make([]byte, len(msg.Emsg))
 
-	bm := cipher.NewCBCDecrypter(kp.block, msg.iv)
-	bm.CryptBlocks(out, msg.emsg)
+	bm := cipher.NewCBCDecrypter(kp.block, msg.Iv)
+	bm.CryptBlocks(out, msg.Emsg)
 
+	return
+}
+
+func (kp *ECDHKeyPair) EncryptMessage(msg Message) EncryptedMessage {
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+
+	enc.Encode(msg)
+
+	return kp.Encrypt(buf.Bytes())
+}
+
+func (kp *ECDHKeyPair) DecryptMessage(msg EncryptedMessage) (out Message) {
+	raw := kp.Decrypt(msg)
+
+	buf := bytes.NewBuffer(raw)
+	dec := gob.NewDecoder(buf)
+
+	dec.Decode(&out)
 	return
 }
