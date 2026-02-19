@@ -125,10 +125,15 @@ func (kp *ECDHKeyPair) Shared() []byte {
 }
 
 func (kp *ECDHKeyPair) Encrypt(msg []byte) (out EncryptedMessage) {
-	out.Iv = make([]byte, kp.block.BlockSize())
+	out.Iv = make([]byte, aes.BlockSize)
 	rand.Read(out.Iv)
 
 	bm := cipher.NewCBCEncrypter(kp.block, out.Iv)
+	if diff := len(msg) % kp.block.BlockSize(); diff != 0 {
+		for i := 0; i < kp.block.BlockSize()-diff; i++ {
+			msg = append(msg, 0)
+		}
+	}
 	out.Emsg = make([]byte, len(msg))
 	bm.CryptBlocks(out.Emsg, msg)
 

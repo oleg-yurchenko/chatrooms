@@ -27,25 +27,29 @@ type Server struct {
 	listener   net.Listener
 	name       string
 	anonTicker uint
+	logMsgs    chan string
 }
 
 type ServerConfig struct {
-	name string
-	port int
+	Name string
+	Addr string
+	Port int
 }
 
 func MakeServer(cfg ServerConfig) (server *Server, err error) {
 	server = &Server{
 		users:      make(map[string]shared.UserId),
 		conns:      make(map[shared.UserId]*Conn),
-		name:       cfg.name,
+		name:       cfg.Name,
 		anonTicker: 0,
+		logMsgs:    make(chan string, 256),
 	}
 
-	server.listener, err = net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(cfg.port)))
+	server.listener, err = net.Listen("tcp", net.JoinHostPort(cfg.Addr, strconv.Itoa(cfg.Port)))
 	if err != nil {
 		return
 	}
+	log.Printf("Spun up server on %v", server.listener.Addr())
 
 	return
 }
@@ -57,7 +61,7 @@ func (server *Server) Start() error {
 	go func() {
 		for {
 			conn, err := server.listener.Accept()
-			if err != nil {
+			if err == nil {
 				newConn <- conn
 			}
 		}
@@ -71,12 +75,16 @@ func (server *Server) Start() error {
 		case conn := <-newConn:
 			// populate info
 			go server.Establish(context.Background(), conn)
+		case msg := <-server.logMsgs:
+			log.Println(msg)
 		}
 	}
 }
 
 // goroutine that establishes a connection to a new user and processes it
 func (server *Server) Establish(ctx context.Context, conn net.Conn) {
+	server.logMsgs <- fmt.Sprintf("Received connection request from %v (local: %v)", conn.RemoteAddr(), conn.LocalAddr())
+
 	var err error = nil
 	uid := shared.MakeUserId()
 	defer func() {
