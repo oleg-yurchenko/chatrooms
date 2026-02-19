@@ -152,8 +152,8 @@ func (server *Server) Establish(ctx context.Context, conn net.Conn) {
 		Cmd:      shared.SendMessage,
 		Data:     fmt.Sprintf("Welcome, %s!", uname),
 	}
-	encrypted := newConn.kp.EncryptMessage(welcome)
-	newConnd.snd.Encode(encrypted)
+	encrypted := newConn.kp.EncryptMessage(*welcome)
+	newConn.snd.Encode(encrypted)
 
 	return
 }
